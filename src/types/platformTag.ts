@@ -1,0 +1,12 @@
+export type PlatformTag =
+  | 'dex'
+  | 'lending'
+  | 'stablecoin'
+  | 'cefi'
+  | 'defi'
+  | 'nft'
+  | 'cex'
+  | 'wallet'
+  | 'bridge'
+  | 'staking'
+  | 'governance'

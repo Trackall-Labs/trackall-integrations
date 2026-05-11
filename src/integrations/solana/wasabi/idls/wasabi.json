@@ -1,0 +1,53 @@
+{
+  "address": "spicyTHtbmarmUxwFSHYpA8G4uP2nRNq38RReMpoZ9c",
+  "metadata": {
+    "name": "wasabi_solana",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "accounts": [
+    {
+      "name": "Position",
+      "discriminator": [170, 188, 143, 228, 122, 64, 247, 208]
+    },
+    {
+      "name": "BasePool",
+      "discriminator": [220, 192, 66, 74, 196, 95, 91, 32]
+    }
+  ],
+  "types": [
+    {
+      "name": "Position",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "trader", "type": "pubkey" },
+          { "name": "currency", "type": "pubkey" },
+          { "name": "collateral", "type": "pubkey" },
+          { "name": "last_funding_timestamp", "type": "i64" },
+          { "name": "down_payment", "type": "u64" },
+          { "name": "principal", "type": "u64" },
+          { "name": "collateral_amount", "type": "u64" },
+          { "name": "fees_to_be_paid", "type": "u64" },
+          { "name": "collateral_vault", "type": "pubkey" },
+          { "name": "lp_vault", "type": "pubkey" }
+        ]
+      }
+    },
+    {
+      "name": "BasePool",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "collateral", "type": "pubkey" },
+          { "name": "collateral_vault", "type": "pubkey" },
+          { "name": "currency", "type": "pubkey" },
+          { "name": "currency_vault", "type": "pubkey" },
+          { "name": "is_long_pool", "type": "bool" },
+          { "name": "bump", "type": "u8" },
+          { "name": "max_leverage", "type": "u64" }
+        ]
+      }
+    }
+  ]
+}
