@@ -11,7 +11,7 @@ import type {
   UsersFilterSource,
 } from '../../../types/index'
 import { applyPositionsPctUsdValueChange24 } from '../../../utils/positionChange'
-import { ONE_MINUTE_IN_MS } from '../../../utils/solana'
+import { ONE_HOUR_IN_MS, ONE_MINUTE_IN_MS } from '../../../utils/solana'
 
 const SAVE_PROGRAM_ID = 'So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo'
 const DEFAULT_PUBLIC_KEY = '11111111111111111111111111111111'
@@ -25,6 +25,7 @@ const OBLIGATION_BORROWS_LEN_OFFSET = 203
 const OBLIGATION_ITEMS_OFFSET = 204
 const OBLIGATION_DEPOSIT_SIZE = 88
 const OBLIGATION_BORROW_SIZE = 112
+const OBLIGATION_ACCOUNT_SIZE = 1300
 const OBLIGATION_DEPOSIT_RESERVE_OFFSET = 0
 const OBLIGATION_DEPOSIT_AMOUNT_OFFSET = 32
 const OBLIGATION_BORROW_RESERVE_OFFSET = 0
@@ -310,6 +311,7 @@ export const saveIntegration: SolanaIntegration = {
         kind: 'getProgramAccounts' as const,
         programId: SAVE_PROGRAM_ID,
         filters: [
+          { dataSize: OBLIGATION_ACCOUNT_SIZE },
           { memcmp: { offset: OBLIGATION_OWNER_OFFSET, bytes: walletAddress } },
         ],
       },
@@ -357,6 +359,7 @@ export const saveIntegration: SolanaIntegration = {
     const reservesMap = yield {
       kind: 'getProgramAccounts' as const,
       programId: SAVE_PROGRAM_ID,
+      cacheTtlMs: ONE_HOUR_IN_MS,
       filters: [{ dataSize: RESERVE_ACCOUNT_SIZE }],
     }
 
