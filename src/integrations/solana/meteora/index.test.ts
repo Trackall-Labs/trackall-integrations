@@ -23,6 +23,24 @@ const { getUserPositions } = meteoraIntegration
 if (!getUserPositions) throw new Error('getUserPositions not implemented')
 
 describe('meteora integration', () => {
+  it('does not require an RPC endpoint inside the integration', async () => {
+    const tokens = new TokenPlugin()
+    const plugins = { endpoint: 'rpc-free', tokens }
+
+    const [positions] = await runIntegrations(
+      [getUserPositions(wallet, plugins)],
+      async () => {
+        throw new Error('account fetch should not run when no positions exist')
+      },
+      async (req) => {
+        expect(req.kind).toBe('getProgramAccounts')
+        return {}
+      },
+    )
+
+    expect(positions).toEqual([])
+  })
+
   it('fetches user positions from Meteora DLMM', async () => {
     const connection = new Connection(solanaRpcUrl, 'confirmed')
     const tokens = new TokenPlugin()

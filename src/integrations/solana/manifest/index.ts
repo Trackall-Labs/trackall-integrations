@@ -4,7 +4,7 @@ import {
   type OrderType,
   Wrapper,
 } from '@bonasa-tech/manifest-sdk'
-import { Connection, PublicKey } from '@solana/web3.js'
+import { PublicKey } from '@solana/web3.js'
 import type {
   PositionValue,
   SolanaAccount,
@@ -197,7 +197,7 @@ export const manifestIntegration: SolanaIntegration = {
 
   getUserPositions: async function* (
     address: string,
-    { endpoint, tokens }: SolanaPlugins,
+    { tokens }: SolanaPlugins,
   ): UserPositionsPlan {
     const tokenSource = {
       get(token: string): { pctPriceChange24h?: number } | undefined {
@@ -209,9 +209,6 @@ export const manifestIntegration: SolanaIntegration = {
     }
 
     const trader = new PublicKey(address)
-    const currentSlot = await new Connection(endpoint, 'confirmed').getSlot(
-      'confirmed',
-    )
 
     const accounts = yield [
       {
@@ -252,7 +249,6 @@ export const manifestIntegration: SolanaIntegration = {
         Market.loadFromBuffer({
           address: new PublicKey(account.address),
           buffer: Buffer.from(account.data),
-          slot: currentSlot,
         }),
       )
 

@@ -1,9 +1,11 @@
+import { BorshCoder } from '@coral-xyz/anchor'
+import { convertIdlToCamelCase } from '@coral-xyz/anchor/dist/cjs/idl.js'
 import {
   ClockLayout,
-  createProgram,
   decodeAccount,
   getAccountDiscriminator,
   getPriceOfBinByBinId,
+  IDL,
   LBCLMM_PROGRAM_IDS,
   positionOwnerFilter,
   positionV2Filter,
@@ -18,7 +20,7 @@ import {
   unpackMint,
 } from '@solana/spl-token'
 import type { AccountInfo } from '@solana/web3.js'
-import { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
+import { PublicKey, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
 import BN from 'bn.js'
 
 import type {
@@ -48,6 +50,16 @@ type DecodedBinArray = {
   bins: Array<{ amountX: BN; amountY: BN; liquiditySupply: BN } | null>
 }
 
+type MeteoraProgram = Parameters<typeof wrapPosition>[0]
+
+const meteoraProgram = {
+  coder: new BorshCoder(
+    convertIdlToCamelCase(
+      IDL as unknown as Parameters<typeof convertIdlToCamelCase>[0],
+    ),
+  ),
+} as unknown as MeteoraProgram
+
 export const testAddress = 'D2TKNY5CwCHCTu5YPbpouC9D4DGuoSvFsaYnMyEg7djn'
 
 export const PROGRAM_IDS = [
@@ -61,7 +73,7 @@ export const meteoraIntegration: SolanaIntegration = {
 
   getUserPositions: async function* (
     address: string,
-    { endpoint, tokens }: SolanaPlugins,
+    { tokens }: SolanaPlugins,
   ): UserPositionsPlan {
     const tokenSource = {
       get(token: string): { pctPriceChange24h?: number } | undefined {
@@ -73,8 +85,6 @@ export const meteoraIntegration: SolanaIntegration = {
     }
 
     const programId = new PublicKey(LBCLMM_PROGRAM_IDS['mainnet-beta'])
-    const connection = new Connection(endpoint)
-    const program = createProgram(connection)
     const walletPubkey = new PublicKey(address)
 
     // Phase 0: discover positions via getProgramAccounts (through runner)
@@ -100,7 +110,7 @@ export const meteoraIntegration: SolanaIntegration = {
     if (rawPositions.length === 0) return []
 
     const positions = rawPositions.map((p) =>
-      wrapPosition(program, p.pubkey, p.account),
+      wrapPosition(meteoraProgram, p.pubkey, p.account),
     )
 
     // Collect unique lb pair keys and all bin array keys; cache coverage keys per position
@@ -133,7 +143,7 @@ export const meteoraIntegration: SolanaIntegration = {
         lbPairMap.set(
           key,
           decodeAccount(
-            program,
+            meteoraProgram,
             'lbPair',
             Buffer.from(acc.data),
           ) as DecodedLbPair,
@@ -147,7 +157,7 @@ export const meteoraIntegration: SolanaIntegration = {
         binArrayMap.set(
           key,
           decodeAccount(
-            program,
+            meteoraProgram,
             'binArray',
             Buffer.from(acc.data),
           ) as DecodedBinArray,
