@@ -12,6 +12,7 @@ const tramplinPlatform = {
   description:
     'Tramplin premium staking rewards protocol on top of delegated Solana stake',
   tags: ['staking'],
+  defiLlamaId: 'tramplin',
   links: {
     website: 'https://tramplin.io',
     documentation: 'https://blog.tramplin.io',

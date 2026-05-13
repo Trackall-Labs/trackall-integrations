@@ -10,6 +10,7 @@ const divvyPlatform = {
     longitude: -83.7534,
   },
   image: 'https://divvy.bet/favicon.ico',
+  defiLlamaId: 'divvy.bet',
   description: 'Divvy house pool staking positions on Solana',
   tags: ['staking'],
   links: {

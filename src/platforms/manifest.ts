@@ -8,6 +8,7 @@ const manifestPlatform = {
     latitude: 37.0902,
     longitude: -95.7129,
   },
+  defiLlamaId: 'manifest-trade',
   image: 'https://manifest.trade/apple-touch-icon.png',
   description: 'Manifest spot orderbook markets on Solana',
   tags: ['dex', 'defi'],

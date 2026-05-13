@@ -12,6 +12,7 @@ const titanPlatform = {
   description:
     'Titan finds every way possible to lower fees and maximize your gains.',
   tags: ['dex', 'defi'],
+  defiLlamaId: 'titan-exchange',
   links: {
     website: 'https://titan.exchange/swap',
     documentation: 'https://titan-exchange.gitbook.io/titan',

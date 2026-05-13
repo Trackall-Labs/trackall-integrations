@@ -11,6 +11,7 @@ const zeusPlatform = {
   },
   image: 'https://app.zeusnetwork.xyz/apple-icon.png',
   description: 'Zeus BTC staking strategies on Solana',
+  defiLlamaId: 'zeus-network',
   tags: ['staking'],
   links: {
     website: 'https://zeusnetwork.xyz',
