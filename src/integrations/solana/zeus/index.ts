@@ -1,15 +1,4 @@
-import {
-  createAssociatedTokenAccountInstruction,
-  getAssociatedTokenAddressSync,
-  TOKEN_PROGRAM_ID,
-} from '@solana/spl-token'
-import {
-  Connection,
-  PublicKey,
-  TransactionInstruction,
-  TransactionMessage,
-  VersionedTransaction,
-} from '@solana/web3.js'
+import { PublicKey } from '@solana/web3.js'
 import type {
   PositionValue,
   SolanaIntegration,
@@ -22,7 +11,6 @@ import type {
 import { applyPositionsPctUsdValueChange24 } from '../../../utils/positionChange'
 
 const ZEUS_PROGRAM_ID = 'SYNMjud3ALEaeJhxuq8gpc2wJzC4XLHfxp9SgKmzQ8r'
-const ZEUS_MARKET = 'CyRC3kBmmhpew1J4Doahy9Lv9Wwkd9rNd82MQGD5Ri2K'
 const BTCSOL_MINT = 'BSoLov7Es6mGLkBq7Z89PSWDmk6Vsw4jVxdfE2UHrJTX'
 const BTCSOL_DECIMALS = 9
 const ZBTC_MINT = 'zBTCug3er3tLyffELcvDNrKkCymbPWysGcWihESYfLg'
@@ -40,13 +28,6 @@ const USER_POSITION_DISCRIMINATOR_B64 = Buffer.from(
 const REDEEM_REQUEST_DISCRIMINATOR_B64 = Buffer.from(
   REDEEM_REQUEST_DISCRIMINATOR,
 ).toString('base64')
-const CLAIM_TREASURY_TOKEN_DISCRIMINATOR = new Uint8Array([
-  236, 254, 8, 227, 34, 205, 177, 58,
-])
-const TREASURY_TOKEN_CLAIMED_EVENT_DISCRIMINATOR = new Uint8Array([
-  2, 70, 156, 32, 177, 203, 105, 174,
-])
-
 const OWNER_OFFSET_IN_USER_POSITION = 40
 const STRATEGY_GROUP_OFFSET = 72
 const SYNTHETIC_AMOUNT_OFFSET = 168
@@ -55,15 +36,6 @@ const UNDERLYING_MINT_OFFSET_IN_REDEEM_REQUEST = 104
 const SYNTHETIC_AMOUNT_REQUESTED_OFFSET = 136
 const UNDERLYING_AMOUNT_TO_REDEEM_OFFSET = 144
 const REFUNDABLE_AFTER_TS_OFFSET = 184
-
-const USER_POSITION_SEED = Buffer.from('user_position')
-const TREASURY_DISTRIBUTION_SEED = Buffer.from('treasury_distribution')
-const EVENT_DATA_LOG_PREFIX = 'Program data: '
-const TREASURY_TOKEN_CLAIMED_AMOUNT_OFFSET = 8 + 32 * 6
-
-const ZEUS_PROGRAM_PUBLIC_KEY = new PublicKey(ZEUS_PROGRAM_ID)
-const ZEUS_MARKET_PUBLIC_KEY = new PublicKey(ZEUS_MARKET)
-const ZBTC_MINT_PUBLIC_KEY = new PublicKey(ZBTC_MINT)
 
 const KNOWN_STRATEGY_GROUPS: Record<string, string> = {
   CMBwsHiUnih1VAzENzoNKTq8tyRaCpD2zBgBUm47sN6h: 'mSOL',
@@ -78,6 +50,7 @@ type StrategyState = {
   assetMint?: string
   assetDecimals?: number
   latestUnlockAt?: bigint
+  treasuryReceipt?: TreasuryDistributionReceipt
 }
 
 export const testAddress = 'tEsT1vjsJeKHw9GH5HpnQszn2LWmjR6q1AVCDCj51nd'
@@ -162,10 +135,36 @@ const STRATEGY_UNDERLYING_EPOCH_RATIO_REL_OFFSET = 256
 const STRATEGY_UNDERLYING_DECIMALS_REL_OFFSET = 376
 const EXCHANGE_RATIO_SCALE = 10n ** 12n
 
+const USER_POSITION_TREASURY_RECEIPTS_OFFSET = 193
+const DISTRIBUTION_RECEIPT_SIZE = 104
+const DISTRIBUTION_RECEIPT_TOKEN_MINT_REL_OFFSET = 32
+const DISTRIBUTION_RECEIPT_OWED_AMOUNT_SCALED_REL_OFFSET = 64
+const DISTRIBUTION_RECEIPT_LAST_ACCUMULATED_REL_OFFSET = 80
+
+const STRATEGY_TREASURY_TOKEN_START_OFFSET =
+  STRATEGY_UNDERLYING_START_OFFSET + 3 * STRATEGY_UNDERLYING_ENTRY_SIZE
+const STRATEGY_TREASURY_TOKEN_ENTRY_SIZE = 400
+const STRATEGY_TREASURY_TOKEN_MINT_REL_OFFSET = 0
+const STRATEGY_TREASURY_TOKEN_MIN_CLAIM_REL_OFFSET = 192
+const STRATEGY_TREASURY_TOKEN_ACCUMULATED_REL_OFFSET = 320
+
+const DISTRIBUTION_SHARES_SCALE = 10n ** 9n
+const DISTRIBUTION_OWED_SCALE = 10n ** 6n
+
 type StrategyConversion = {
   mint: string
   decimals: number
   epochStartRatio: bigint
+}
+
+type TreasuryDistributionReceipt = {
+  owedAmountScaled: bigint
+  lastAccumulatedAmountScaledPerShare: bigint
+}
+
+type TreasuryDistribution = {
+  minAmountToClaim: bigint
+  accumulatedAmountScaledPerShare: bigint
 }
 
 function decodeStrategyConversion(data: Uint8Array): StrategyConversion | null {
@@ -198,172 +197,87 @@ function convertSyntheticToUnderlying(
   return (syntheticAmount * EXCHANGE_RATIO_SCALE) / conversion.epochStartRatio
 }
 
-function deriveUserPositionAddress(
-  owner: PublicKey,
-  strategyGroup: PublicKey,
-): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [USER_POSITION_SEED, strategyGroup.toBuffer(), owner.toBuffer()],
-    ZEUS_PROGRAM_PUBLIC_KEY,
-  )[0]
-}
+function decodeTreasuryDistributionReceipt(
+  data: Uint8Array,
+): TreasuryDistributionReceipt | null {
+  for (let index = 0; index < 5; index++) {
+    const base =
+      USER_POSITION_TREASURY_RECEIPTS_OFFSET + index * DISTRIBUTION_RECEIPT_SIZE
+    const tokenMint = readPubkey(
+      data,
+      base + DISTRIBUTION_RECEIPT_TOKEN_MINT_REL_OFFSET,
+    )
+    if (tokenMint !== ZBTC_MINT) continue
 
-function deriveTreasuryDistributionAddress(
-  strategyGroup: PublicKey,
-): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [
-      TREASURY_DISTRIBUTION_SEED,
-      strategyGroup.toBuffer(),
-      ZBTC_MINT_PUBLIC_KEY.toBuffer(),
-    ],
-    ZEUS_PROGRAM_PUBLIC_KEY,
-  )[0]
-}
+    const owedAmountScaled = readU128(
+      data,
+      base + DISTRIBUTION_RECEIPT_OWED_AMOUNT_SCALED_REL_OFFSET,
+    )
+    const lastAccumulatedAmountScaledPerShare = readU128(
+      data,
+      base + DISTRIBUTION_RECEIPT_LAST_ACCUMULATED_REL_OFFSET,
+    )
+    if (
+      owedAmountScaled === null ||
+      lastAccumulatedAmountScaledPerShare === null
+    )
+      return null
 
-function hasPrefix(data: Uint8Array, prefix: Uint8Array): boolean {
-  if (data.length < prefix.length) return false
-  for (let i = 0; i < prefix.length; i++) {
-    if (data[i] !== prefix[i]) return false
-  }
-  return true
-}
-
-function parseTreasuryClaimedAmount(logs?: readonly string[] | null): bigint {
-  if (!logs) return 0n
-
-  let claimed = 0n
-  for (const log of logs) {
-    if (!log.startsWith(EVENT_DATA_LOG_PREFIX)) continue
-    const encoded = log.slice(EVENT_DATA_LOG_PREFIX.length).trim()
-    if (!encoded) continue
-
-    try {
-      const data = Buffer.from(encoded, 'base64')
-      if (!hasPrefix(data, TREASURY_TOKEN_CLAIMED_EVENT_DISCRIMINATOR)) continue
-      if (data.length < TREASURY_TOKEN_CLAIMED_AMOUNT_OFFSET + 8) continue
-      claimed = data.readBigUInt64LE(TREASURY_TOKEN_CLAIMED_AMOUNT_OFFSET)
-    } catch {
-      // Ignore malformed program data lines and keep scanning logs.
-    }
+    return { owedAmountScaled, lastAccumulatedAmountScaledPerShare }
   }
 
-  return claimed
+  return null
 }
 
-async function simulateTreasuryClaimAmount(
-  connection: Connection,
-  owner: PublicKey,
-  strategyGroup: PublicKey,
-  receiverZbtcAta: PublicKey,
-  includeAtaCreate: boolean,
-): Promise<bigint> {
-  const userPosition = deriveUserPositionAddress(owner, strategyGroup)
-  const treasuryDistribution = deriveTreasuryDistributionAddress(strategyGroup)
+function decodeTreasuryDistribution(
+  data: Uint8Array,
+): TreasuryDistribution | null {
+  for (let index = 0; index < 5; index++) {
+    const base =
+      STRATEGY_TREASURY_TOKEN_START_OFFSET +
+      index * STRATEGY_TREASURY_TOKEN_ENTRY_SIZE
+    const tokenMint = readPubkey(
+      data,
+      base + STRATEGY_TREASURY_TOKEN_MINT_REL_OFFSET,
+    )
+    if (tokenMint !== ZBTC_MINT) continue
 
-  const claimIx = new TransactionInstruction({
-    programId: ZEUS_PROGRAM_PUBLIC_KEY,
-    keys: [
-      { pubkey: owner, isSigner: true, isWritable: true },
-      { pubkey: ZEUS_MARKET_PUBLIC_KEY, isSigner: false, isWritable: false },
-      { pubkey: strategyGroup, isSigner: false, isWritable: true },
-      { pubkey: userPosition, isSigner: false, isWritable: true },
-      { pubkey: ZBTC_MINT_PUBLIC_KEY, isSigner: false, isWritable: false },
-      { pubkey: treasuryDistribution, isSigner: false, isWritable: true },
-      { pubkey: receiverZbtcAta, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    ],
-    data: Buffer.from(CLAIM_TREASURY_TOKEN_DISCRIMINATOR),
-  })
+    const minAmountToClaim = readU64(
+      data,
+      base + STRATEGY_TREASURY_TOKEN_MIN_CLAIM_REL_OFFSET,
+    )
+    const accumulatedAmountScaledPerShare = readU128(
+      data,
+      base + STRATEGY_TREASURY_TOKEN_ACCUMULATED_REL_OFFSET,
+    )
+    if (minAmountToClaim === null || accumulatedAmountScaledPerShare === null)
+      return null
 
-  const instructions = [
-    ...(includeAtaCreate
-      ? [
-          createAssociatedTokenAccountInstruction(
-            owner,
-            receiverZbtcAta,
-            owner,
-            ZBTC_MINT_PUBLIC_KEY,
-            TOKEN_PROGRAM_ID,
-          ),
-        ]
-      : []),
-    claimIx,
-  ]
+    return { minAmountToClaim, accumulatedAmountScaledPerShare }
+  }
 
-  const { blockhash } = await connection.getLatestBlockhash('confirmed')
-  const message = new TransactionMessage({
-    payerKey: owner,
-    recentBlockhash: blockhash,
-    instructions,
-  }).compileToV0Message()
-
-  const simulation = await connection.simulateTransaction(
-    new VersionedTransaction(message),
-  )
-  return parseTreasuryClaimedAmount(simulation.value.logs)
+  return null
 }
 
-async function fetchTreasuryRewardsByStrategy(
-  address: string,
-  strategyGroups: readonly string[],
-  endpoint: string,
-): Promise<Map<string, bigint>> {
-  if (!strategyGroups.length) return new Map()
+function calculateTreasuryRewardAmount(
+  syntheticAmount: bigint,
+  receipt: TreasuryDistributionReceipt | undefined,
+  distribution: TreasuryDistribution | null,
+): bigint {
+  if (!receipt || !distribution) return 0n
 
-  const connection = new Connection(endpoint, 'confirmed')
-  const owner = new PublicKey(address)
-  const zbtcAta = getAssociatedTokenAddressSync(
-    ZBTC_MINT_PUBLIC_KEY,
-    owner,
-    true,
-    TOKEN_PROGRAM_ID,
-  )
-  const zbtcAtaExists =
-    (await connection.getAccountInfo(zbtcAta, 'confirmed')) !== null
+  const accumulatedDelta =
+    distribution.accumulatedAmountScaledPerShare >
+    receipt.lastAccumulatedAmountScaledPerShare
+      ? distribution.accumulatedAmountScaledPerShare -
+        receipt.lastAccumulatedAmountScaledPerShare
+      : 0n
+  const accruedAmountScaled =
+    (syntheticAmount * accumulatedDelta) / DISTRIBUTION_SHARES_SCALE
+  const claimableAmount =
+    (receipt.owedAmountScaled + accruedAmountScaled) / DISTRIBUTION_OWED_SCALE
 
-  const rewards = await Promise.all(
-    strategyGroups.map(async (strategyGroupAddress) => {
-      const strategyGroup = new PublicKey(strategyGroupAddress)
-
-      try {
-        const amount = await simulateTreasuryClaimAmount(
-          connection,
-          owner,
-          strategyGroup,
-          zbtcAta,
-          false,
-        )
-        if (amount > 0n) return [strategyGroupAddress, amount] as const
-      } catch {
-        // Fallback below.
-      }
-
-      if (zbtcAtaExists) return undefined
-
-      try {
-        const amount = await simulateTreasuryClaimAmount(
-          connection,
-          owner,
-          strategyGroup,
-          zbtcAta,
-          true,
-        )
-        if (amount > 0n) return [strategyGroupAddress, amount] as const
-      } catch {
-        // Treat simulation errors as no claimable rewards.
-      }
-
-      return undefined
-    }),
-  )
-
-  return new Map(
-    rewards.filter(
-      (item): item is readonly [string, bigint] =>
-        item !== undefined && item[1] > 0n,
-    ),
-  )
+  return claimableAmount >= distribution.minAmountToClaim ? claimableAmount : 0n
 }
 
 export const zeusIntegration: SolanaIntegration = {
@@ -371,7 +285,7 @@ export const zeusIntegration: SolanaIntegration = {
 
   getUserPositions: async function* (
     address: string,
-    { endpoint, tokens }: SolanaPlugins,
+    { tokens }: SolanaPlugins,
   ): UserPositionsPlan {
     const tokenSource = {
       get(token: string): { pctPriceChange24h?: number } | undefined {
@@ -436,6 +350,7 @@ export const zeusIntegration: SolanaIntegration = {
       const owner = readPubkey(account.data, OWNER_OFFSET_IN_USER_POSITION)
       const strategyGroup = readPubkey(account.data, STRATEGY_GROUP_OFFSET)
       const syntheticAmount = readU64(account.data, SYNTHETIC_AMOUNT_OFFSET)
+      const treasuryReceipt = decodeTreasuryDistributionReceipt(account.data)
       if (
         !owner ||
         !strategyGroup ||
@@ -443,41 +358,22 @@ export const zeusIntegration: SolanaIntegration = {
         owner !== address
       )
         continue
-      if (syntheticAmount <= 0n) continue
 
       const current = strategyState.get(strategyGroup)
       if (current) {
-        current.staked += syntheticAmount
-        current.syntheticStaked += syntheticAmount
+        if (syntheticAmount > 0n) {
+          current.staked += syntheticAmount
+          current.syntheticStaked += syntheticAmount
+        }
+        if (treasuryReceipt) current.treasuryReceipt = treasuryReceipt
       } else {
         strategyState.set(strategyGroup, {
-          staked: syntheticAmount,
-          syntheticStaked: syntheticAmount,
+          staked: syntheticAmount > 0n ? syntheticAmount : 0n,
+          syntheticStaked: syntheticAmount > 0n ? syntheticAmount : 0n,
           unbonding: [],
+          ...(treasuryReceipt && { treasuryReceipt }),
         })
       }
-    }
-
-    const strategyGroups = [...strategyState.keys()]
-    const strategyAccounts =
-      strategyGroups.length > 0 ? yield strategyGroups : {}
-
-    for (const strategyGroup of strategyGroups) {
-      const strategyAccount = strategyAccounts[strategyGroup]
-      if (!strategyAccount?.exists) continue
-
-      const conversion = decodeStrategyConversion(strategyAccount.data)
-      if (!conversion) continue
-
-      const state = strategyState.get(strategyGroup)
-      if (!state) continue
-
-      state.assetMint = conversion.mint
-      state.assetDecimals = conversion.decimals
-      state.staked = convertSyntheticToUnderlying(
-        state.syntheticStaked,
-        conversion,
-      )
     }
 
     for (const account of Object.values(accounts)) {
@@ -541,11 +437,36 @@ export const zeusIntegration: SolanaIntegration = {
       .filter(([, state]) => state.staked > 0n || state.unbonding.length > 0)
       .map(([strategyGroup]) => strategyGroup)
 
-    const treasuryRewardsByStrategy = await fetchTreasuryRewardsByStrategy(
-      address,
-      activeStrategyGroups,
-      endpoint,
-    )
+    const strategyAccounts =
+      activeStrategyGroups.length > 0 ? yield activeStrategyGroups : {}
+    const treasuryRewardsByStrategy = new Map<string, bigint>()
+
+    for (const strategyGroup of activeStrategyGroups) {
+      const strategyAccount = strategyAccounts[strategyGroup]
+      if (!strategyAccount?.exists) continue
+
+      const state = strategyState.get(strategyGroup)
+      if (!state) continue
+
+      const conversion = decodeStrategyConversion(strategyAccount.data)
+      if (conversion) {
+        state.assetMint = conversion.mint
+        state.assetDecimals = conversion.decimals
+        state.staked = convertSyntheticToUnderlying(
+          state.syntheticStaked,
+          conversion,
+        )
+      }
+
+      const rewardAmount = calculateTreasuryRewardAmount(
+        state.syntheticStaked,
+        state.treasuryReceipt,
+        decodeTreasuryDistribution(strategyAccount.data),
+      )
+      if (rewardAmount > 0n) {
+        treasuryRewardsByStrategy.set(strategyGroup, rewardAmount)
+      }
+    }
 
     const positions: UserDefiPosition[] = []
 
