@@ -320,6 +320,15 @@ function isNonNull<T>(value: T | null): value is T {
   return value !== null
 }
 
+const U64_MAX = new BN('ffffffffffffffff', 16)
+
+// Guards against desynchronized fee/reward state where the SDK's subUnderflowU128
+// produces an incorrect wrapped result that propagates into the final amount.
+// SPL token amounts are u64; anything larger is an artifact, not a real balance.
+function isSafeTokenAmount(amount: BN): boolean {
+  return !amount.isNeg() && amount.lte(U64_MAX)
+}
+
 export const orcaIntegration: SolanaIntegration = {
   platformId: 'orca',
 
@@ -617,24 +626,30 @@ export const orcaIntegration: SolanaIntegration = {
         ),
       ]
 
-      const fees = [
-        feesQuote.feeOwedA.gt(new BN(0))
-          ? buildPositionValue(
-              whirlpool.tokenMintA.toBase58(),
-              feesQuote.feeOwedA,
-              mintA.decimals,
-              tokens.get(whirlpool.tokenMintA.toBase58())?.priceUsd,
-            )
-          : null,
-        feesQuote.feeOwedB.gt(new BN(0))
-          ? buildPositionValue(
-              whirlpool.tokenMintB.toBase58(),
-              feesQuote.feeOwedB,
-              mintB.decimals,
-              tokens.get(whirlpool.tokenMintB.toBase58())?.priceUsd,
-            )
-          : null,
-      ].filter(isNonNull)
+      const feesOverflowed =
+        !isSafeTokenAmount(feesQuote.feeOwedA) ||
+        !isSafeTokenAmount(feesQuote.feeOwedB)
+
+      const fees = feesOverflowed
+        ? []
+        : [
+            feesQuote.feeOwedA.gt(new BN(0))
+              ? buildPositionValue(
+                  whirlpool.tokenMintA.toBase58(),
+                  feesQuote.feeOwedA,
+                  mintA.decimals,
+                  tokens.get(whirlpool.tokenMintA.toBase58())?.priceUsd,
+                )
+              : null,
+            feesQuote.feeOwedB.gt(new BN(0))
+              ? buildPositionValue(
+                  whirlpool.tokenMintB.toBase58(),
+                  feesQuote.feeOwedB,
+                  mintB.decimals,
+                  tokens.get(whirlpool.tokenMintB.toBase58())?.priceUsd,
+                )
+              : null,
+          ].filter(isNonNull)
 
       const rewards = whirlpool.rewardInfos
         .map((rewardInfo, index) => {
@@ -642,6 +657,7 @@ export const orcaIntegration: SolanaIntegration = {
 
           const amount = rewardsQuote.rewardOwed[index]
           if (!amount?.gt(new BN(0))) return null
+          if (!isSafeTokenAmount(amount)) return null
 
           const mint = mintMap.get(rewardInfo.mint.toBase58())
           if (!mint) return null
