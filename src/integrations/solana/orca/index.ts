@@ -2,23 +2,18 @@ import { BN } from '@coral-xyz/anchor'
 import type {
   PositionBundleData,
   PositionData,
-  TickArrayData,
   WhirlpoolData,
 } from '@orca-so/whirlpools-sdk'
 import {
   // AccountName,
-  collectFeesQuote,
-  collectRewardsQuote,
   ORCA_WHIRLPOOL_PROGRAM_ID,
   ParsablePosition,
   ParsablePositionBundle,
-  ParsableTickArray,
   ParsableWhirlpool,
   PDAUtil,
   PoolUtil,
   PositionBundleUtil,
   PriceMath,
-  TickArrayUtil,
   // WHIRLPOOL_CODER,
 } from '@orca-so/whirlpools-sdk'
 import {
@@ -27,7 +22,7 @@ import {
   unpackMint,
 } from '@solana/spl-token'
 import type { AccountInfo } from '@solana/web3.js'
-import { PublicKey, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
+import { PublicKey } from '@solana/web3.js'
 import type {
   ConcentratedRangeLiquidityDefiPosition,
   MaybeSolanaAccount,
@@ -46,12 +41,7 @@ type ParsedMintAccount = ReturnType<typeof unpackMint> & {
   tokenProgram: PublicKey
 }
 
-type ClockState = {
-  epoch: number
-  unixTimestamp: BN
-}
-
-export const testAddress = '93PSyNrS7zBhrXaHHfU1ZtfegcKq5SaCYc35ZwPVrK3K'
+export const testAddress = '3XmgTpc3bndpMdksjoN7jtd6nWsCvm6gSoJvTcySxCEP'
 
 export const PROGRAM_IDS = [
   ORCA_WHIRLPOOL_PROGRAM_ID.toBase58(),
@@ -125,13 +115,6 @@ function parseWhirlpool(
   return ParsableWhirlpool.parse(new PublicKey(address), toAccountInfo(account))
 }
 
-function parseTickArray(
-  address: string,
-  account: MaybeSolanaAccount | undefined,
-): TickArrayData | null {
-  return ParsableTickArray.parse(new PublicKey(address), toAccountInfo(account))
-}
-
 function parseMint(
   address: string,
   account: MaybeSolanaAccount | undefined,
@@ -146,20 +129,6 @@ function parseMint(
     }
   } catch {
     return null
-  }
-}
-
-function parseClock(
-  account: MaybeSolanaAccount | undefined,
-): ClockState | null {
-  if (!account?.exists) return null
-
-  const buf = Buffer.from(account.data)
-  if (buf.length < 40) return null
-
-  return {
-    epoch: Number(buf.readBigUInt64LE(16)),
-    unixTimestamp: new BN(buf.readBigInt64LE(32).toString()),
   }
 }
 
@@ -290,43 +259,8 @@ function collectCandidateMints(accounts: MaybeSolanaAccount[]): {
 //   return filters
 // }
 
-function buildRewardTokenTuple(
-  whirlpool: WhirlpoolData,
-  mintMap: ReadonlyMap<string, ParsedMintAccount>,
-) {
-  const getMint = (mint: PublicKey) => mintMap.get(mint.toBase58())
-  const reward0 = whirlpool.rewardInfos[0]
-  const reward1 = whirlpool.rewardInfos[1]
-  const reward2 = whirlpool.rewardInfos[2]
-
-  return [
-    reward0 && PoolUtil.isRewardInitialized(reward0)
-      ? (getMint(reward0.mint) ?? null)
-      : null,
-    reward1 && PoolUtil.isRewardInitialized(reward1)
-      ? (getMint(reward1.mint) ?? null)
-      : null,
-    reward2 && PoolUtil.isRewardInitialized(reward2)
-      ? (getMint(reward2.mint) ?? null)
-      : null,
-  ] as [
-    ParsedMintAccount | null,
-    ParsedMintAccount | null,
-    ParsedMintAccount | null,
-  ]
-}
-
 function isNonNull<T>(value: T | null): value is T {
   return value !== null
-}
-
-const U64_MAX = new BN('ffffffffffffffff', 16)
-
-// Guards against desynchronized fee/reward state where the SDK's subUnderflowU128
-// produces an incorrect wrapped result that propagates into the final amount.
-// SPL token amounts are u64; anything larger is an artifact, not a real balance.
-function isSafeTokenAmount(amount: BN): boolean {
-  return !amount.isNeg() && amount.lte(U64_MAX)
 }
 
 export const orcaIntegration: SolanaIntegration = {
@@ -429,68 +363,23 @@ export const orcaIntegration: SolanaIntegration = {
     if (positionMap.size === 0) return []
 
     const whirlpoolAddresses = new Set<string>()
-    const tickArrayAddresses = new Set<string>()
 
     for (const position of positionMap.values()) {
       whirlpoolAddresses.add(position.whirlpool.toBase58())
     }
 
-    const whirlpoolAndTickAccounts = yield [
-      ...whirlpoolAddresses,
-      SYSVAR_CLOCK_PUBKEY.toBase58(),
-    ]
+    const whirlpoolAccounts = yield [...whirlpoolAddresses]
 
     const whirlpoolMap = new Map<string, WhirlpoolData>()
     for (const whirlpoolAddress of whirlpoolAddresses) {
       const whirlpool = parseWhirlpool(
         whirlpoolAddress,
-        whirlpoolAndTickAccounts[whirlpoolAddress],
+        whirlpoolAccounts[whirlpoolAddress],
       )
       if (whirlpool) whirlpoolMap.set(whirlpoolAddress, whirlpool)
     }
 
     if (whirlpoolMap.size === 0) return []
-
-    for (const position of positionMap.values()) {
-      const whirlpool = whirlpoolMap.get(position.whirlpool.toBase58())
-      if (!whirlpool) continue
-
-      tickArrayAddresses.add(
-        PDAUtil.getTickArrayFromTickIndex(
-          position.tickLowerIndex,
-          whirlpool.tickSpacing,
-          position.whirlpool,
-          programId,
-        ).publicKey.toBase58(),
-      )
-      tickArrayAddresses.add(
-        PDAUtil.getTickArrayFromTickIndex(
-          position.tickUpperIndex,
-          whirlpool.tickSpacing,
-          position.whirlpool,
-          programId,
-        ).publicKey.toBase58(),
-      )
-    }
-
-    const tickAndClockAccounts = yield [
-      ...tickArrayAddresses,
-      SYSVAR_CLOCK_PUBKEY.toBase58(),
-    ]
-
-    const tickArrayMap = new Map<string, TickArrayData>()
-    for (const tickArrayAddress of tickArrayAddresses) {
-      const tickArray = parseTickArray(
-        tickArrayAddress,
-        tickAndClockAccounts[tickArrayAddress],
-      )
-      if (tickArray) tickArrayMap.set(tickArrayAddress, tickArray)
-    }
-
-    const clock =
-      parseClock(tickAndClockAccounts[SYSVAR_CLOCK_PUBKEY.toBase58()]) ??
-      parseClock(whirlpoolAndTickAccounts[SYSVAR_CLOCK_PUBKEY.toBase58()])
-    if (!clock) return []
 
     const mintAddresses = new Set<string>()
     for (const whirlpool of whirlpoolMap.values()) {
@@ -516,45 +405,9 @@ export const orcaIntegration: SolanaIntegration = {
       const whirlpool = whirlpoolMap.get(position.whirlpool.toBase58())
       if (!whirlpool) continue
 
-      const lowerTickArrayAddress = PDAUtil.getTickArrayFromTickIndex(
-        position.tickLowerIndex,
-        whirlpool.tickSpacing,
-        position.whirlpool,
-        programId,
-      ).publicKey.toBase58()
-      const upperTickArrayAddress = PDAUtil.getTickArrayFromTickIndex(
-        position.tickUpperIndex,
-        whirlpool.tickSpacing,
-        position.whirlpool,
-        programId,
-      ).publicKey.toBase58()
-
-      const lowerTickArray = tickArrayMap.get(lowerTickArrayAddress)
-      const upperTickArray = tickArrayMap.get(upperTickArrayAddress)
-      if (!lowerTickArray || !upperTickArray) continue
-
       const mintA = mintMap.get(whirlpool.tokenMintA.toBase58())
       const mintB = mintMap.get(whirlpool.tokenMintB.toBase58())
       if (!mintA || !mintB) continue
-
-      let tickLowerParsed: ReturnType<typeof TickArrayUtil.getTickFromArray>
-      let tickUpperParsed: ReturnType<typeof TickArrayUtil.getTickFromArray>
-      try {
-        tickLowerParsed = TickArrayUtil.getTickFromArray(
-          lowerTickArray,
-          position.tickLowerIndex,
-          whirlpool.tickSpacing,
-        )
-        tickUpperParsed = TickArrayUtil.getTickFromArray(
-          upperTickArray,
-          position.tickUpperIndex,
-          whirlpool.tickSpacing,
-        )
-      } catch {
-        continue
-      }
-
-      if (!tickLowerParsed || !tickUpperParsed) continue
 
       const lowerPrice = PriceMath.tickIndexToPrice(
         position.tickLowerIndex,
@@ -578,15 +431,6 @@ export const orcaIntegration: SolanaIntegration = {
       const upperSqrtPrice = PriceMath.tickIndexToSqrtPriceX64(
         position.tickUpperIndex,
       )
-      const feeTokenExtensionCtx = {
-        currentEpoch: clock.epoch,
-        tokenMintWithProgramA: mintA,
-        tokenMintWithProgramB: mintB,
-      }
-      const rewardTokenExtensionCtx = {
-        currentEpoch: clock.epoch,
-        rewardTokenMintsWithProgram: buildRewardTokenTuple(whirlpool, mintMap),
-      }
       const principalAmounts = PoolUtil.getTokenAmountsFromLiquidity(
         position.liquidity,
         whirlpool.sqrtPrice,
@@ -594,22 +438,6 @@ export const orcaIntegration: SolanaIntegration = {
         upperSqrtPrice,
         false,
       )
-
-      const feesQuote = collectFeesQuote({
-        whirlpool,
-        position,
-        tickLower: tickLowerParsed,
-        tickUpper: tickUpperParsed,
-        tokenExtensionCtx: feeTokenExtensionCtx,
-      })
-      const rewardsQuote = collectRewardsQuote({
-        whirlpool,
-        position,
-        tickLower: tickLowerParsed,
-        tickUpper: tickUpperParsed,
-        timeStampInSeconds: clock.unixTimestamp,
-        tokenExtensionCtx: rewardTokenExtensionCtx,
-      })
 
       const poolTokens = [
         buildPositionValue(
@@ -626,38 +454,34 @@ export const orcaIntegration: SolanaIntegration = {
         ),
       ]
 
-      const feesOverflowed =
-        !isSafeTokenAmount(feesQuote.feeOwedA) ||
-        !isSafeTokenAmount(feesQuote.feeOwedB)
-
-      const fees = feesOverflowed
-        ? []
-        : [
-            feesQuote.feeOwedA.gt(new BN(0))
-              ? buildPositionValue(
-                  whirlpool.tokenMintA.toBase58(),
-                  feesQuote.feeOwedA,
-                  mintA.decimals,
-                  tokens.get(whirlpool.tokenMintA.toBase58())?.priceUsd,
-                )
-              : null,
-            feesQuote.feeOwedB.gt(new BN(0))
-              ? buildPositionValue(
-                  whirlpool.tokenMintB.toBase58(),
-                  feesQuote.feeOwedB,
-                  mintB.decimals,
-                  tokens.get(whirlpool.tokenMintB.toBase58())?.priceUsd,
-                )
-              : null,
-          ].filter(isNonNull)
+      // Do not estimate additional collectible fees; only expose values already
+      // stored on the Orca position account.
+      const fees = [
+        position.feeOwedA.gt(new BN(0))
+          ? buildPositionValue(
+              whirlpool.tokenMintA.toBase58(),
+              position.feeOwedA,
+              mintA.decimals,
+              tokens.get(whirlpool.tokenMintA.toBase58())?.priceUsd,
+            )
+          : null,
+        position.feeOwedB.gt(new BN(0))
+          ? buildPositionValue(
+              whirlpool.tokenMintB.toBase58(),
+              position.feeOwedB,
+              mintB.decimals,
+              tokens.get(whirlpool.tokenMintB.toBase58())?.priceUsd,
+            )
+          : null,
+      ].filter(isNonNull)
 
       const rewards = whirlpool.rewardInfos
         .map((rewardInfo, index) => {
           if (!PoolUtil.isRewardInitialized(rewardInfo)) return null
 
-          const amount = rewardsQuote.rewardOwed[index]
+          // Do not estimate emitted rewards since the last on-chain update.
+          const amount = position.rewardInfos[index]?.amountOwed
           if (!amount?.gt(new BN(0))) return null
-          if (!isSafeTokenAmount(amount)) return null
 
           const mint = mintMap.get(rewardInfo.mint.toBase58())
           if (!mint) return null
