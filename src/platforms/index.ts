@@ -44,6 +44,7 @@ import stabblePlatform from './stabble'
 import symmetryPlatform from './symmetry'
 import titanPlatform from './titan'
 import tramplinPlatform from './tramplin'
+import validatorsPlatform from './validators'
 import wasabiPlatform from './wasabi'
 import yuzuPlatform from './yuzu'
 import zelofiPlatform from './zelofi'
@@ -86,6 +87,7 @@ export const platforms = [
   raydiumPlatform,
   realmsPlatform,
   tramplinPlatform,
+  validatorsPlatform,
   saberPlatform,
   snsPlatform,
   stabblePlatform,
